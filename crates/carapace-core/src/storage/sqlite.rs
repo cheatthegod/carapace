@@ -98,6 +98,14 @@ impl Storage {
 
     // ── Steps ────────────────────────────────────────────────
 
+    pub async fn list_session_ids(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT id FROM sessions ORDER BY created_at DESC")
+                .fetch_all(&self.pool)
+                .await?;
+        Ok(rows.into_iter().map(|(id,)| id).collect())
+    }
+
     pub async fn insert_step(&self, entry: &TraceEntry) -> Result<()> {
         let action_detail = serde_json::to_string(&entry.action)?;
         let verification_result = verification_label(&entry.verification.decision);

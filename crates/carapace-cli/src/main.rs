@@ -107,6 +107,17 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
+    /// Analyze past sessions and discover failure patterns.
+    Learn {
+        /// Minimum confidence threshold for generated rules (0.0 to 1.0).
+        #[arg(long, default_value_t = 0.3)]
+        min_confidence: f64,
+
+        /// Output as JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Inspect or run the MCP endpoint.
     Mcp {
         #[command(subcommand)]
@@ -227,6 +238,9 @@ async fn main() -> Result<()> {
             output,
         } => {
             run_trace_export(&cli, session_id, *format, output.clone()).await?;
+        }
+        Commands::Learn { min_confidence, json } => {
+            run_learn(&cli, *min_confidence, *json).await?;
         }
         Commands::Mcp { command } => {
             run_mcp(&cli, command).await?;
@@ -531,6 +545,64 @@ async fn run_trace_export(
             let mut handle = stdout.lock();
             write_trace(&trace, format, &mut handle)?;
             handle.flush()?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_learn(cli: &Cli, min_confidence: f64, as_json: bool) -> Result<()> {
+    let runtime = load_runtime(cli)?;
+    let storage = open_storage(&runtime.db_path).await?;
+    let learner = carapace_core::learner::Learner::new(storage, min_confidence);
+
+    let report = learner.learn().await?;
+
+    if as_json {
+        let output = json!({
+            "sessions_analyzed": report.sessions_analyzed,
+            "total_steps": report.total_steps,
+            "total_failures": report.total_failures,
+            "patterns_found": report.patterns_found.len(),
+            "rules_generated": report.rules_generated.len(),
+            "rules": report.rules_generated,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+        return Ok(());
+    }
+
+    println!("Carapace Learning Report");
+    println!("========================");
+    println!("Sessions analyzed: {}", report.sessions_analyzed);
+    println!("Total steps:       {}", report.total_steps);
+    println!("Total failures:    {}", report.total_failures);
+    println!();
+
+    if report.patterns_found.is_empty() {
+        println!("No failure patterns found (need more session data).");
+        return Ok(());
+    }
+
+    println!("Patterns discovered:");
+    for pattern in &report.patterns_found {
+        println!(
+            "  [{:.0}% confidence] {}: {}",
+            pattern.confidence * 100.0,
+            pattern.name,
+            pattern.description,
+        );
+    }
+    println!();
+
+    if report.rules_generated.is_empty() {
+        println!("No rules met the confidence threshold ({:.0}%).", min_confidence * 100.0);
+    } else {
+        println!("Learned rules (confidence >= {:.0}%):", min_confidence * 100.0);
+        for rule in &report.rules_generated {
+            println!(
+                "  [{}] {}: {}",
+                rule.name, rule.source_pattern, rule.description,
+            );
         }
     }
 

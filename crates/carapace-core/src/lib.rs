@@ -1,6 +1,7 @@
 pub mod checkpoint;
 pub mod config;
 pub mod engine;
+pub mod learner;
 pub mod storage;
 pub mod tracer;
 pub mod types;

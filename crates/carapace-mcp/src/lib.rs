@@ -118,6 +118,16 @@ impl McpServer {
                     }
                 })).unwrap(),
             },
+            Tool {
+                name: "carapace_learn".into(),
+                description: "Analyze past sessions to discover failure patterns and generate adaptive verification rules.".into(),
+                input_schema: serde_json::from_value(json!({
+                    "type": "object",
+                    "properties": {
+                        "min_confidence": { "type": "number", "description": "Minimum confidence threshold (0.0-1.0, default 0.3)" }
+                    }
+                })).unwrap(),
+            },
         ]
     }
 
@@ -132,6 +142,7 @@ impl McpServer {
             "carapace_record_step" => self.handle_record_step(val).await,
             "carapace_rollback" => self.handle_rollback(val).await,
             "carapace_session_summary" => self.handle_session_summary(val).await,
+            "carapace_learn" => self.handle_learn(val).await,
             _ => Err(McpError::method_not_found::<CallToolRequestMethod>()),
         }
     }
@@ -229,6 +240,29 @@ impl McpServer {
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         json_result(&summary)
+    }
+
+    async fn handle_learn(&self, val: serde_json::Value) -> Result<CallToolResult, McpError> {
+        let min_confidence = val.get("min_confidence").and_then(|v| v.as_f64()).unwrap_or(0.3);
+
+        let learner = carapace_core::learner::Learner::new(
+            self.engine.storage().clone(),
+            min_confidence,
+        );
+
+        let report = learner.learn().await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        let output = serde_json::json!({
+            "sessions_analyzed": report.sessions_analyzed,
+            "total_steps": report.total_steps,
+            "total_failures": report.total_failures,
+            "patterns_found": report.patterns_found.len(),
+            "rules_generated": report.rules_generated.len(),
+            "rules": report.rules_generated,
+        });
+
+        json_result(&output)
     }
 }
 
