@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/cheatthegod/carapace/actions"><img alt="CI" src="https://img.shields.io/badge/tests-17%2F17%20passing-brightgreen"></a>
+  <a href="https://github.com/cheatthegod/carapace/actions"><img alt="CI" src="https://img.shields.io/badge/tests-31%2F31%20passing-brightgreen"></a>
   <a href="https://github.com/cheatthegod/carapace/blob/master/Cargo.toml"><img alt="Rust" src="https://img.shields.io/badge/rust-2024%20edition-orange"></a>
   <a href="https://github.com/cheatthegod/carapace/blob/master/Cargo.toml"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
 </p>
@@ -24,6 +24,29 @@ AI agents are unreliable on multi-step tasks. Not because the model is dumb, but
 Raising per-step accuracy from 95% to 99% through verification more than doubles the 20-step success rate (36% to 82%). That is what Carapace does.
 
 **Evidence:** Pi Research changed only the execution harness (model untouched) and SWE-bench jumped from 6.7% to 68.3%. The bottleneck is not the brain, it is the skeleton. ([Meng et al., "Agent Harness for LLM Agents: A Survey", 2026](https://www.preprints.org/manuscript/202604.0428/v1))
+
+## Tested with Real Agents
+
+Carapace has been validated in live Claude Code sessions (not simulations):
+
+| Run | Task | Steps | Verifier blocks | False positives | .env protected |
+|-----|------|:-----:|:---:|:---:|:---:|
+| Demo 1 | Workspace cleanup | 5 | 2 | 1 | Yes |
+| Demo 2 | Same (after path rule fix) | 5 | 2 | 1 | Yes |
+| Demo 3 | Same (after regex fix) | 4 | 1 | 0 | Yes |
+| **A/B Eval** | **Security bug fix** | **4** | **1** | **0** | **Yes** |
+
+**A/B comparison** (same task, same model, Carapace on vs off):
+
+| | Baseline | With Carapace |
+|---|:---:|:---:|
+| Task completed | Yes | Yes |
+| Security bugs fixed | 3/3 | 3/3 |
+| Tests passing | 5/5 | 5/5 |
+| Cost | $0.23 | $0.51 |
+| Steps traced + checkpointed | — | 4 steps, 1 checkpoint |
+
+Honest finding: on simple 4-step tasks, both runs succeed — Carapace adds overhead without differentiation. Carapace's value shows on **longer tasks** (10+ steps), **ambiguous requirements**, and **irreversible operations** where error compounding matters. See [`eval/REPORT.md`](eval/REPORT.md) for full analysis.
 
 ## What Carapace Does
 
@@ -393,7 +416,7 @@ RUST_LOG=debug cargo run -- verify execute "test command"
 ```
 $ cargo test
 
-running 17 tests
+running 31 tests
 test checkpoint::git::tests::detect_git_repo ... ok
 test checkpoint::git::tests::save_and_restore_checkpoint ... ok
 test checkpoint::saga::tests::max_depth_pruning ... ok
@@ -412,31 +435,35 @@ test verifier::rules::tests::blocks_regex_style_command_patterns ... ok
 test verifier::rules::tests::blocks_too_many_files ... ok
 test verifier::rules::tests::warns_when_confirmation_is_required ... ok
 
-test result: ok. 17 passed; 0 failed; 0 ignored
+test result: ok. 31 passed; 0 failed; 0 ignored
 ```
 
 ---
 
 ## Roadmap
 
-### Phase 1 (current) -- Verifiable
+### Phase 1 -- Verifiable (done)
 
 - [x] Rule-based verification engine (commands, paths, file limits)
 - [x] Threat pattern matching (10 built-in patterns)
 - [x] Consistency checking (contradictions, loops, plan drift)
-- [x] Git-based checkpoints (stash/commit)
-- [x] Saga transaction rollback
+- [x] Git-based checkpoints (non-mutating `stash create`)
+- [x] Saga transaction rollback (reverse-order compensation)
 - [x] SQLite trace storage with anomaly detection
-- [x] CLI with verify / wrap / summary / trace / mcp
-- [x] MCP server tool manifest
+- [x] CLI: verify / wrap / summary / trace / mcp
+- [x] Full MCP server (6 tools via rmcp 0.1.5 ServerHandler)
+- [x] Live Claude Code integration (tested in 4 real sessions)
+- [x] A/B evaluation framework with automated comparison
+- [x] Completion rate integration test (0% baseline → 100% guarded)
+- [x] 2 false-positive fixes from real demo data (path matching, command regex)
 
-### Phase 2 -- Recoverable
+### Phase 2 (current) -- Recoverable
 
 - [ ] Lightweight model review (use cheap model to verify expensive model output)
 - [ ] Auto-test execution after code changes
 - [ ] Alternative path selection on rollback (failure analysis -> retry strategy)
-- [ ] Full MCP protocol handling (JSON-RPC over stdio)
 - [ ] Cost tracking with budget enforcement and auto-downgrade
+- [ ] Evaluation on longer tasks (10-20 steps) where error compounding matters
 
 ### Phase 3 -- Observable
 
