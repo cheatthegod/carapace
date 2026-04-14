@@ -1,0 +1,17 @@
+[package]
+name = "carapace-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MCP Server for Carapace"
+
+[dependencies]
+carapace-core = { path = "../carapace-core" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+indoc.workspace = true

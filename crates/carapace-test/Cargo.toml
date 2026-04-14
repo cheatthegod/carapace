@@ -1,0 +1,12 @@
+[package]
+name = "carapace-test"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Test utilities for Carapace"
+
+[dependencies]
+carapace-core = { path = "../carapace-core" }
+tokio.workspace = true
+tempfile = "3"
+anyhow.workspace = true
