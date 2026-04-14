@@ -1,7 +1,9 @@
 pub mod patterns;
+pub mod persist;
 pub mod rules;
 
 use anyhow::Result;
+use std::path::Path;
 
 use crate::storage::Storage;
 use crate::types::*;
@@ -64,6 +66,13 @@ impl Learner {
     pub async fn learn_rules(&self) -> Result<Vec<LearnedRule>> {
         let report = self.learn().await?;
         Ok(report.rules_generated)
+    }
+
+    /// Analyze sessions, generate rules, persist to disk, and return them.
+    pub async fn learn_and_save(&self, data_dir: &Path) -> Result<LearningReport> {
+        let report = self.learn().await?;
+        persist::save_rules(data_dir, &report.rules_generated)?;
+        Ok(report)
     }
 
     async fn load_all_sessions(&self) -> Result<Vec<SessionTrace>> {

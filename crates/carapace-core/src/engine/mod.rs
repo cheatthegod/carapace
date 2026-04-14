@@ -161,7 +161,7 @@ impl ExecutionEngine {
         &self.storage
     }
 
-    /// Load learned rules from past session analysis into the verifier.
+    /// Analyze past sessions, generate rules, and load them into the verifier.
     pub async fn load_learned_rules(&self, min_confidence: f64) -> Result<usize> {
         let learner = crate::learner::Learner::new(self.storage.clone(), min_confidence);
         let rules = learner.learn_rules().await?;
@@ -169,7 +169,32 @@ impl ExecutionEngine {
         if let Ok(mut lr) = self.learned_rules.lock() {
             *lr = rules;
         }
-        tracing::info!("Loaded {} learned rules (min_confidence={:.2})", count, min_confidence);
+        tracing::info!("Loaded {} learned rules from trace analysis", count);
+        Ok(count)
+    }
+
+    /// Analyze past sessions, persist rules to disk, and load into verifier.
+    pub async fn learn_and_save(&self, data_dir: &std::path::Path, min_confidence: f64) -> Result<crate::learner::LearningReport> {
+        let learner = crate::learner::Learner::new(self.storage.clone(), min_confidence);
+        let report = learner.learn_and_save(data_dir).await?;
+        let count = report.rules_generated.len();
+        if let Ok(mut lr) = self.learned_rules.lock() {
+            *lr = report.rules_generated.clone();
+        }
+        tracing::info!("Learned and saved {} rules to {}", count, data_dir.display());
+        Ok(report)
+    }
+
+    /// Load previously persisted rules from disk into the verifier.
+    pub fn load_rules_from_disk(&self, data_dir: &std::path::Path) -> Result<usize> {
+        let rules = crate::learner::persist::load_rules(data_dir)?;
+        let count = rules.len();
+        if let Ok(mut lr) = self.learned_rules.lock() {
+            *lr = rules;
+        }
+        if count > 0 {
+            tracing::info!("Loaded {} persisted learned rules from {}", count, data_dir.display());
+        }
         Ok(count)
     }
 
