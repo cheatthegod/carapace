@@ -1,6 +1,7 @@
 use carapace_core::{
     ActionType, BeginSessionRequest, CarapaceConfig, ExecutionEngine, RecordStepRequest,
-    StepAction, StepOutcomeStatus, Storage, VerifyStepRequest,
+    RollbackRequest, SaveCheckpointRequest, StepAction, StepOutcomeStatus, Storage,
+    VerifyStepRequest,
 };
 use rmcp::{
     Error as McpError,
@@ -60,20 +61,12 @@ impl McpServer {
             Tool {
                 name: "carapace_verify_step".into(),
                 description: "Verify a proposed step before executing a tool action. Returns pass/warn/fail.".into(),
-                input_schema: serde_json::from_value(json!({
-                    "type": "object",
-                    "required": ["session_id", "action_type", "description"],
-                    "properties": {
-                        "session_id": { "type": "string" },
-                        "step_number": { "type": "integer" },
-                        "plan": { "type": "string" },
-                        "action_type": { "type": "string", "enum": ["read", "write", "delete", "execute", "api_call", "search"] },
-                        "tool_name": { "type": "string" },
-                        "arguments": { "type": "object" },
-                        "target_files": { "type": "array", "items": { "type": "string" } },
-                        "description": { "type": "string" }
-                    }
-                })).unwrap(),
+                input_schema: action_schema_with_required(&["session_id", "action_type", "description"]),
+            },
+            Tool {
+                name: "carapace_save_checkpoint".into(),
+                description: "Create a git-backed checkpoint before a risky step so the session can roll back to it.".into(),
+                input_schema: action_schema_with_required(&["session_id", "action_type", "description"]),
             },
             Tool {
                 name: "carapace_record_step".into(),
@@ -101,6 +94,20 @@ impl McpServer {
                 })).unwrap(),
             },
             Tool {
+                name: "carapace_rollback".into(),
+                description: "Roll back to a saved checkpoint, or undo the last N checkpointed steps.".into(),
+                input_schema: serde_json::from_value(json!({
+                    "type": "object",
+                    "required": ["session_id"],
+                    "properties": {
+                        "session_id": { "type": "string" },
+                        "checkpoint_id": { "type": "string" },
+                        "steps_back": { "type": "integer" },
+                        "reason": { "type": "string" }
+                    }
+                })).unwrap(),
+            },
+            Tool {
                 name: "carapace_session_summary".into(),
                 description: "Return the summary for a recorded Carapace session.".into(),
                 input_schema: serde_json::from_value(json!({
@@ -121,7 +128,9 @@ impl McpServer {
         match name {
             "carapace_begin_session" => self.handle_begin_session(val).await,
             "carapace_verify_step" => self.handle_verify_step(val).await,
+            "carapace_save_checkpoint" => self.handle_save_checkpoint(val).await,
             "carapace_record_step" => self.handle_record_step(val).await,
+            "carapace_rollback" => self.handle_rollback(val).await,
             "carapace_session_summary" => self.handle_session_summary(val).await,
             _ => Err(McpError::method_not_found::<CallToolRequestMethod>()),
         }
@@ -157,6 +166,18 @@ impl McpServer {
         json_result(&response)
     }
 
+    async fn handle_save_checkpoint(&self, val: serde_json::Value) -> Result<CallToolResult, McpError> {
+        let session_id = require_str(&val, "session_id")?;
+        let action = build_action(&val)?;
+
+        let response = self.engine
+            .save_checkpoint(SaveCheckpointRequest { session_id, action })
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        json_result(&response)
+    }
+
     async fn handle_record_step(&self, val: serde_json::Value) -> Result<CallToolResult, McpError> {
         let session_id = require_str(&val, "session_id")?;
         let action = build_action(&val)?;
@@ -174,6 +195,25 @@ impl McpServer {
             .record_step(RecordStepRequest {
                 session_id, step_number, plan, action, reason, checkpoint_id,
                 result_status, result_message, tokens_used, cost_usd, duration_ms,
+            })
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        json_result(&response)
+    }
+
+    async fn handle_rollback(&self, val: serde_json::Value) -> Result<CallToolResult, McpError> {
+        let session_id = require_str(&val, "session_id")?;
+        let checkpoint_id = val.get("checkpoint_id").and_then(|v| v.as_str()).map(String::from);
+        let steps_back = val.get("steps_back").and_then(|v| v.as_u64()).map(|v| v as u32);
+        let reason = val.get("reason").and_then(|v| v.as_str()).map(String::from);
+
+        let response = self.engine
+            .rollback(RollbackRequest {
+                session_id,
+                checkpoint_id,
+                steps_back,
+                reason,
             })
             .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
@@ -222,7 +262,7 @@ impl ServerHandler for McpServer {
                 name: "carapace".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
             },
-            instructions: Some("Start with carapace_begin_session before a multi-step task. Call carapace_verify_step before each tool action. Call carapace_record_step after each tool action finishes. Use carapace_session_summary to inspect progress.".into()),
+            instructions: Some("Start with carapace_begin_session before a multi-step task. Call carapace_verify_step before each tool action. Call carapace_save_checkpoint before risky writes or deletes. Call carapace_record_step after each tool action finishes. Use carapace_rollback to restore a saved checkpoint, and carapace_session_summary to inspect progress.".into()),
         }
     }
 
@@ -237,7 +277,23 @@ impl ServerHandler for McpServer {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────
+fn action_schema_with_required(required: &[&str]) -> std::sync::Arc<JsonObject> {
+    serde_json::from_value(json!({
+        "type": "object",
+        "required": required,
+        "properties": {
+            "session_id": { "type": "string" },
+            "step_number": { "type": "integer" },
+            "plan": { "type": "string" },
+            "action_type": { "type": "string", "enum": ["read", "write", "delete", "execute", "api_call", "search"] },
+            "tool_name": { "type": "string" },
+            "arguments": { "type": "object" },
+            "target_files": { "type": "array", "items": { "type": "string" } },
+            "description": { "type": "string" }
+        }
+    }))
+    .unwrap()
+}
 
 fn require_str(val: &serde_json::Value, field: &str) -> Result<String, McpError> {
     val.get(field)
@@ -280,4 +336,45 @@ fn json_result<T: Serialize>(value: &T) -> Result<CallToolResult, McpError> {
     let body = serde_json::to_string_pretty(value)
         .map_err(|e| McpError::internal_error(format!("serialization failed: {e}"), None))?;
     Ok(CallToolResult::success(vec![Content::text(body)]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn tool_definitions_include_checkpoint_tools() {
+        let tool_names: Vec<String> = McpServer::tool_definitions()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+
+        assert!(tool_names.contains(&"carapace_begin_session".to_string()));
+        assert!(tool_names.contains(&"carapace_verify_step".to_string()));
+        assert!(tool_names.contains(&"carapace_save_checkpoint".to_string()));
+        assert!(tool_names.contains(&"carapace_record_step".to_string()));
+        assert!(tool_names.contains(&"carapace_rollback".to_string()));
+        assert!(tool_names.contains(&"carapace_session_summary".to_string()));
+    }
+
+    #[test]
+    fn parse_statuses() {
+        assert!(matches!(parse_status("success").unwrap(), StepOutcomeStatus::Success));
+        assert!(matches!(parse_status("failure").unwrap(), StepOutcomeStatus::Failure));
+        assert!(matches!(parse_status("rolled_back").unwrap(), StepOutcomeStatus::RolledBack));
+        assert!(matches!(parse_status("skipped").unwrap(), StepOutcomeStatus::Skipped));
+        assert!(parse_status("oops").is_err());
+    }
+
+    #[test]
+    fn build_action_requires_description() {
+        let val = json!({
+            "action_type": "write",
+            "tool_name": "edit_file",
+            "target_files": ["src/lib.rs"]
+        });
+
+        assert!(build_action(&val).is_err());
+    }
 }

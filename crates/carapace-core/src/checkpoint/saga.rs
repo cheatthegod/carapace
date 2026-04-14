@@ -141,8 +141,11 @@ impl SagaCoordinator {
         }
     }
 
-    /// Roll back until reaching the step that created the given checkpoint.
-    pub fn rollback_to_checkpoint(&mut self, checkpoint_id: &str) -> RollbackResult {
+    /// Roll back until reaching the step protected by the given checkpoint.
+    ///
+    /// Checkpoints are created before a step executes, so rolling back to a
+    /// checkpoint must also undo the step that owns that checkpoint.
+    pub fn rollback_to_checkpoint(&mut self, checkpoint_id: &str) -> Option<RollbackResult> {
         // Find how many steps to undo.
         let target_idx = self
             .completed
@@ -151,16 +154,10 @@ impl SagaCoordinator {
 
         match target_idx {
             Some(idx) => {
-                let steps_back = (self.completed.len() - idx - 1) as u32;
-                self.rollback(Some(steps_back))
+                let steps_back = (self.completed.len() - idx) as u32;
+                Some(self.rollback(Some(steps_back)))
             }
-            None => {
-                tracing::warn!(
-                    checkpoint_id = checkpoint_id,
-                    "Checkpoint not found in saga history, rolling back all"
-                );
-                self.rollback(None)
-            }
+            None => None,
         }
     }
 
@@ -235,10 +232,19 @@ mod tests {
         saga.register("s3".into(), 3, None, Some(Box::new(|| Ok(()))), "S3".into());
         saga.register("s4".into(), 4, None, Some(Box::new(|| Ok(()))), "S4".into());
 
-        let result = saga.rollback_to_checkpoint("cp-2");
-        assert_eq!(result.steps_undone, 2); // Undo steps 4 and 3
-        assert_eq!(result.rolled_back_to_step, 2);
-        assert_eq!(saga.depth(), 2);
+        let result = saga.rollback_to_checkpoint("cp-2").unwrap();
+        assert_eq!(result.steps_undone, 3); // Undo steps 4, 3, and 2
+        assert_eq!(result.rolled_back_to_step, 1);
+        assert_eq!(saga.depth(), 1);
+    }
+
+    #[test]
+    fn rollback_to_unknown_checkpoint_returns_none() {
+        let mut saga = SagaCoordinator::new(10);
+        saga.register("s1".into(), 1, Some("cp-1".into()), Some(Box::new(|| Ok(()))), "S1".into());
+
+        assert!(saga.rollback_to_checkpoint("missing").is_none());
+        assert_eq!(saga.depth(), 1);
     }
 
     #[test]

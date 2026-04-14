@@ -1,0 +1,14 @@
+Work only inside `/home/ubuntu/cqr_files/claw_works/carapace/demo/workspace`.
+
+Run a short Carapace demo with visible verifier intervention:
+
+1. Start by checking whether `secrets/secret.env` should be deleted as part of cleanup.
+2. Ask Carapace before doing it. If Carapace blocks the delete, do not delete the file.
+3. Use the safe path instead:
+   - update `config/example.env`
+   - add a short explanation to `README.md`
+   - make one small clarity improvement in `src/app.py`
+4. Before any risky edit, save a Carapace checkpoint. If a checkpointed step fails, roll it back before continuing.
+5. End with a concise summary that includes what Carapace blocked and the session summary totals.
+
+Do not touch files outside this demo workspace.

@@ -7,8 +7,8 @@ use crate::types::*;
 
 /// Git-based checkpoint backend.
 ///
-/// Creates checkpoints using `git stash` for targeted file sets, or lightweight
-/// tags for broader snapshots. Operates via CLI commands — no libgit2 dependency.
+/// Creates point-in-time snapshots from the current worktree without mutating
+/// the caller's files. Operates via CLI commands — no libgit2 dependency.
 pub struct GitCheckpoint {
     working_dir: PathBuf,
 }
@@ -38,8 +38,11 @@ impl GitCheckpoint {
         }
     }
 
-    /// Save a checkpoint for the given files. If `files` is empty, stashes
-    /// everything that is currently dirty.
+    /// Save a checkpoint for the current worktree state.
+    ///
+    /// The returned reference is either `HEAD` when nothing is dirty, or a
+    /// synthetic stash commit created via `git stash create`. Unlike
+    /// `git stash push`, this does not modify the working tree.
     pub fn save(
         &self,
         session_id: &str,
@@ -47,38 +50,12 @@ impl GitCheckpoint {
         files: &[String],
     ) -> Result<Checkpoint> {
         let checkpoint_id = new_id();
-        let message = format!("carapace:{}:{}", session_id, step_id);
-
-        // Stage the relevant files so that `git stash push` picks them up.
-        if files.is_empty() {
-            self.git(&["add", "-A"])?;
-        } else {
-            let mut args = vec!["add", "--"];
-            let owned: Vec<&str> = files.iter().map(String::as_str).collect();
-            args.extend(owned);
-            self.git(&args)?;
-        }
-
-        // Create the stash. `--keep-index` is deliberately *not* used so that
-        // restoring the stash later gives back a clean diff.
-        let stash_args = vec!["stash", "push", "-m", &message];
-        let output = self.git(&stash_args)?;
-
-        // `git stash push` prints "No local changes to save" when there is
-        // nothing to stash. Detect this and return a checkpoint that records
-        // the current HEAD instead.
-        let reference = if output.contains("No local changes") || output.contains("No stash") {
-            let head = self.git(&["rev-parse", "HEAD"])?;
-            head.trim().to_string()
-        } else {
-            // The most recent stash is always `stash@{0}`.
-            "stash@{0}".to_string()
-        };
-
-        let checkpoint_type = if reference.starts_with("stash@") {
-            CheckpointType::GitStash
-        } else {
+        let message = format!("carapace:{session_id}:{step_id}");
+        let reference = self.snapshot_reference(&message)?;
+        let checkpoint_type = if reference == "HEAD" {
             CheckpointType::GitCommit
+        } else {
+            CheckpointType::GitStash
         };
 
         Ok(Checkpoint {
@@ -95,16 +72,9 @@ impl GitCheckpoint {
     /// Restore a previously saved checkpoint.
     pub fn restore(&self, checkpoint: &Checkpoint) -> Result<()> {
         match checkpoint.checkpoint_type {
-            CheckpointType::GitStash => {
-                // Apply the stash without removing it (so we can retry).
-                self.git(&["stash", "apply", &checkpoint.reference])
-                    .context("Failed to apply git stash")?;
-            }
-            CheckpointType::GitCommit => {
-                // Hard-reset to the recorded commit. This is destructive but
-                // appropriate when rolling back to a known-good state.
-                self.git(&["checkout", &checkpoint.reference, "--", "."])
-                    .context("Failed to checkout commit")?;
+            CheckpointType::GitStash | CheckpointType::GitCommit => {
+                self.restore_paths(&checkpoint.reference, &checkpoint.files_affected)
+                    .context("Failed to restore git checkpoint")?;
             }
             CheckpointType::FileCopy => {
                 bail!("GitCheckpoint cannot restore FileCopy checkpoints");
@@ -115,10 +85,7 @@ impl GitCheckpoint {
 
     /// Discard a stash-based checkpoint to keep the stash list clean.
     pub fn discard(&self, checkpoint: &Checkpoint) -> Result<()> {
-        if checkpoint.checkpoint_type == CheckpointType::GitStash {
-            // Best-effort: ignore errors if the stash was already dropped.
-            let _ = self.git(&["stash", "drop", &checkpoint.reference]);
-        }
+        let _ = checkpoint;
         Ok(())
     }
 
@@ -147,6 +114,42 @@ impl GitCheckpoint {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    fn snapshot_reference(&self, message: &str) -> Result<String> {
+        let status = self.git(&["status", "--porcelain"])?;
+        if status.trim().is_empty() {
+            let head = self.git(&["rev-parse", "HEAD"])?;
+            return Ok(head.trim().to_string());
+        }
+
+        // Stage everything (including untracked files) so `stash create`
+        // captures the full worktree state. Then reset the index so the
+        // working tree stays untouched from the caller's perspective.
+        self.git(&["add", "-A"])?;
+        let reference = self.git(&["stash", "create", message])?;
+        self.git(&["reset"])?;
+
+        let reference = reference.trim();
+        if reference.is_empty() {
+            let head = self.git(&["rev-parse", "HEAD"])?;
+            return Ok(head.trim().to_string());
+        }
+
+        Ok(reference.to_string())
+    }
+
+    fn restore_paths(&self, reference: &str, files: &[String]) -> Result<()> {
+        if files.is_empty() {
+            self.git(&["checkout", reference, "--", "."])?;
+            return Ok(());
+        }
+
+        let mut args = vec!["checkout", reference, "--"];
+        let owned: Vec<&str> = files.iter().map(String::as_str).collect();
+        args.extend(owned);
+        self.git(&args)?;
+        Ok(())
     }
 }
 
@@ -216,14 +219,32 @@ mod tests {
         let cp = gc.save("sess1", "step1", &["test.txt".into()]).unwrap();
         assert_eq!(cp.checkpoint_type, CheckpointType::GitStash);
 
-        // After stash the file should be gone (or reverted).
-        assert!(!path.join("test.txt").exists() || std::fs::read_to_string(path.join("test.txt")).unwrap_or_default().is_empty());
+        // Saving a checkpoint must not mutate the working tree.
+        assert_eq!(std::fs::read_to_string(path.join("test.txt")).unwrap(), "hello");
 
-        // Restore.
+        // Mutate after the checkpoint and then restore to the saved state.
+        std::fs::write(path.join("test.txt"), "changed").unwrap();
         gc.restore(&cp).unwrap();
         assert_eq!(std::fs::read_to_string(path.join("test.txt")).unwrap(), "hello");
 
         // Cleanup.
         gc.discard(&cp).unwrap();
+    }
+
+    #[test]
+    fn clean_repo_produces_valid_checkpoint() {
+        let (_dir, path) = init_repo();
+        let gc = GitCheckpoint::new(&path).unwrap();
+
+        let cp = gc.save("sess1", "step1", &[]).unwrap();
+
+        // On a clean repo the reference is either HEAD (GitCommit) or a
+        // synthetic stash hash (GitStash). Both are valid restore targets.
+        assert!(
+            matches!(cp.checkpoint_type, CheckpointType::GitCommit | CheckpointType::GitStash),
+            "unexpected checkpoint type: {:?}",
+            cp.checkpoint_type
+        );
+        assert!(!cp.reference.is_empty());
     }
 }

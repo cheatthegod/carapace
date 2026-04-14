@@ -12,7 +12,8 @@ pub use config::{
 };
 pub use engine::{
     BeginSessionRequest, BeginSessionResponse, ExecutionEngine, RecordStepRequest,
-    RecordStepResponse, StepInput, StepOutcomeStatus, VerifyStepRequest, VerifyStepResponse,
+    RecordStepResponse, RollbackRequest, RollbackResponse, SaveCheckpointRequest,
+    SaveCheckpointResponse, StepInput, StepOutcomeStatus, VerifyStepRequest, VerifyStepResponse,
 };
 pub use storage::Storage;
 pub use tracer::Tracer;

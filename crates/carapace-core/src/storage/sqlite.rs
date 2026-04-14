@@ -246,6 +246,18 @@ impl Storage {
         .await?;
         Ok(())
     }
+
+    pub async fn get_checkpoint(&self, id: &str) -> Result<Option<Checkpoint>> {
+        let row = sqlx::query_as::<_, CheckpointRow>(
+            "SELECT id, session_id, step_id, checkpoint_type, reference, files_affected, created_at \
+             FROM checkpoints WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(CheckpointRow::into_checkpoint).transpose()
+    }
 }
 
 // ── Internal row types for sqlx ──────────────────────────────
@@ -311,6 +323,36 @@ impl StepRow {
     }
 }
 
+impl CheckpointRow {
+    fn into_checkpoint(self) -> Result<Checkpoint> {
+        let checkpoint_type = match self.checkpoint_type.as_str() {
+            "git_stash" => CheckpointType::GitStash,
+            "git_commit" => CheckpointType::GitCommit,
+            "file_copy" => CheckpointType::FileCopy,
+            other => anyhow::bail!("unknown checkpoint type: {other}"),
+        };
+        let files_affected = self
+            .files_affected
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()?
+            .unwrap_or_default();
+        let created_at = chrono::NaiveDateTime::parse_from_str(&self.created_at, "%Y-%m-%d %H:%M:%S")
+            .map(|dt| dt.and_utc())
+            .unwrap_or_else(|_| chrono::Utc::now());
+
+        Ok(Checkpoint {
+            id: self.id,
+            session_id: self.session_id,
+            step_id: self.step_id,
+            checkpoint_type,
+            reference: self.reference,
+            files_affected,
+            created_at,
+        })
+    }
+}
+
 #[derive(sqlx::FromRow)]
 struct SummaryRow {
     total_steps: i64,
@@ -321,6 +363,17 @@ struct SummaryRow {
     total_tokens: i64,
     total_cost: f64,
     total_duration: i64,
+}
+
+#[derive(sqlx::FromRow)]
+struct CheckpointRow {
+    id: String,
+    session_id: String,
+    step_id: String,
+    checkpoint_type: String,
+    reference: String,
+    files_affected: Option<String>,
+    created_at: String,
 }
 
 fn verification_label(decision: &VerificationDecision) -> &'static str {
@@ -444,5 +497,34 @@ mod tests {
         assert_eq!(summaries[1].step_number, 2);
         assert_eq!(summaries[0].description, "edit auth config");
         assert_eq!(summaries[1].description, "edit auth handler");
+    }
+
+    #[tokio::test]
+    async fn checkpoint_round_trip() {
+        let storage = Storage::in_memory().await.unwrap();
+        storage
+            .create_session("session-3", Some("test-agent"), "/tmp/project")
+            .await
+            .unwrap();
+
+        let entry = sample_entry("session-3", 1, "edit lib");
+        storage.insert_step(&entry).await.unwrap();
+
+        let checkpoint = Checkpoint {
+            id: "cp-1".to_string(),
+            session_id: "session-3".to_string(),
+            step_id: entry.step_id.clone(),
+            checkpoint_type: CheckpointType::GitCommit,
+            reference: "abc123".to_string(),
+            files_affected: vec!["src/lib.rs".to_string()],
+            created_at: Utc::now(),
+        };
+        storage.insert_checkpoint(&checkpoint).await.unwrap();
+
+        let loaded = storage.get_checkpoint("cp-1").await.unwrap().unwrap();
+        assert_eq!(loaded.id, checkpoint.id);
+        assert_eq!(loaded.step_id, checkpoint.step_id);
+        assert_eq!(loaded.reference, checkpoint.reference);
+        assert_eq!(loaded.files_affected, checkpoint.files_affected);
     }
 }

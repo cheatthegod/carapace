@@ -1,4 +1,5 @@
 /target/
+.carapace/
 *.swp
 *.swo
 *~

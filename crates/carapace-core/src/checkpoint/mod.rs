@@ -54,9 +54,17 @@ impl CheckpointManager {
             return Ok(None);
         }
 
+        Ok(Some(self.save(session_id, step_id, action)?))
+    }
+
+    /// Save a checkpoint for an explicit caller request.
+    pub fn save(&self, session_id: &str, step_id: &str, action: &StepAction) -> Result<Checkpoint> {
+        if !self.config.enabled {
+            anyhow::bail!("checkpointing is disabled");
+        }
+
         let Some(git) = &self.git else {
-            tracing::debug!("No git backend available, skipping checkpoint");
-            return Ok(None);
+            anyhow::bail!("no git checkpoint backend is available for this working directory");
         };
 
         let checkpoint = git.save(session_id, step_id, &action.target_files)?;
@@ -66,7 +74,7 @@ impl CheckpointManager {
             "Saved checkpoint"
         );
 
-        Ok(Some(checkpoint))
+        Ok(checkpoint)
     }
 
     /// Register a completed step with the saga coordinator.
@@ -100,8 +108,17 @@ impl CheckpointManager {
     }
 
     /// Roll back to a specific checkpoint.
-    pub fn rollback_to_checkpoint(&mut self, checkpoint_id: &str) -> RollbackResult {
+    pub fn rollback_to_checkpoint(&mut self, checkpoint_id: &str) -> Option<RollbackResult> {
         self.saga.rollback_to_checkpoint(checkpoint_id)
+    }
+
+    /// Restore a specific checkpoint directly.
+    pub fn restore_checkpoint(&self, checkpoint: &Checkpoint) -> Result<()> {
+        let Some(git) = &self.git else {
+            anyhow::bail!("no git checkpoint backend is available for this working directory");
+        };
+
+        git.restore(checkpoint)
     }
 
     /// Current depth of the saga history.

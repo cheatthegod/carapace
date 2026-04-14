@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "carapace": {
+      "type": "stdio",
+      "command": "python3",
+      "args": [
+        "/home/ubuntu/cqr_files/claw_works/carapace/demo/claude/claude_stdio_shim.py"
+      ],
+      "env": {
+        "CARAPACE_MCP_SHIM_LOG": "/home/ubuntu/cqr_files/claw_works/carapace/.carapace/claude-shim.log",
+        "RUST_LOG": "error"
+      }
+    }
+  }
+}
