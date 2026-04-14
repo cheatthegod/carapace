@@ -41,8 +41,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # MCP
-rmcp = { version = "0.1", features = ["server", "transport-io"] }
-schemars = "1.0"
+rmcp = { version = "0.1", features = ["server", "transport-io", "macros"] }
+schemars = "0.8"
 
 # Paths
 etcetera = "0.11"

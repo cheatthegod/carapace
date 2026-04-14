@@ -85,6 +85,17 @@ impl Storage {
         Ok(())
     }
 
+    pub async fn get_session(&self, id: &str) -> Result<Option<SessionRecord>> {
+        let row = sqlx::query_as::<_, SessionRow>(
+            "SELECT id, agent_name, working_dir, status FROM sessions WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|row| row.into_session_record()))
+    }
+
     // ── Steps ────────────────────────────────────────────────
 
     pub async fn insert_step(&self, entry: &TraceEntry) -> Result<()> {
@@ -253,6 +264,25 @@ struct StepRow {
     cost_usd: f64,
     duration_ms: i64,
     created_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct SessionRow {
+    id: String,
+    agent_name: Option<String>,
+    working_dir: String,
+    status: String,
+}
+
+impl SessionRow {
+    fn into_session_record(self) -> SessionRecord {
+        SessionRecord {
+            session_id: self.id,
+            agent_name: self.agent_name,
+            working_dir: self.working_dir,
+            status: self.status,
+        }
+    }
 }
 
 impl StepRow {

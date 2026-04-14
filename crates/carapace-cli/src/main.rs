@@ -148,7 +148,7 @@ enum McpCommands {
     /// Print the current MCP manifest.
     Manifest,
 
-    /// Start the placeholder stdio MCP server.
+    /// Start the stdio MCP server.
     Serve,
 }
 
@@ -543,7 +543,7 @@ async fn run_mcp(cli: &Cli, command: &McpCommands) -> Result<()> {
 
     match command {
         McpCommands::Manifest => {
-            println!("{}", server.manifest_json()?);
+            println!("{}", server.server_info_json()?);
         }
         McpCommands::Serve => {
             server.serve_stdio().await?;

@@ -10,7 +10,10 @@ pub use config::{
     CarapaceConfig, config_dir, data_dir, default_config_path, default_db_path, load_config,
     write_default_config,
 };
-pub use engine::ExecutionEngine;
+pub use engine::{
+    BeginSessionRequest, BeginSessionResponse, ExecutionEngine, RecordStepRequest,
+    RecordStepResponse, StepInput, StepOutcomeStatus, VerifyStepRequest, VerifyStepResponse,
+};
 pub use storage::Storage;
 pub use tracer::Tracer;
 pub use types::*;

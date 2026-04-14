@@ -1,5 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::str::FromStr;
 use uuid::Uuid;
 
 // ── Identifiers ──────────────────────────────────────────────
@@ -50,6 +52,32 @@ impl ActionType {
     }
 }
 
+impl fmt::Display for ActionType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ActionType {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let trimmed = value.trim();
+        let normalized = trimmed.to_ascii_lowercase();
+
+        match normalized.as_str() {
+            "read" => Ok(ActionType::Read),
+            "write" => Ok(ActionType::Write),
+            "delete" => Ok(ActionType::Delete),
+            "execute" => Ok(ActionType::Execute),
+            "api_call" => Ok(ActionType::ApiCall),
+            "search" => Ok(ActionType::Search),
+            _ if !trimmed.is_empty() => Ok(ActionType::Other(trimmed.to_string())),
+            _ => Err("action type must not be empty".to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepAction {
     pub action_type: ActionType,
@@ -69,6 +97,14 @@ pub struct ExecutionContext {
     pub agent_name: Option<String>,
     pub plan: Option<String>,
     pub previous_steps: Vec<StepSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRecord {
+    pub session_id: SessionId,
+    pub agent_name: Option<String>,
+    pub working_dir: String,
+    pub status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
