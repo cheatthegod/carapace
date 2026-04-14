@@ -4,6 +4,7 @@ pub mod rules;
 pub mod types;
 
 use crate::config::schema::VerificationConfig;
+use crate::learner::rules::{LearnedRule, evaluate_rule};
 use crate::types::*;
 use std::time::Instant;
 
@@ -18,6 +19,7 @@ pub struct CompositeVerifier {
     consistency_enabled: bool,
     rule_verifier: rules::RuleVerifier,
     consistency_checker: consistency::ConsistencyChecker,
+    learned_rules: Vec<LearnedRule>,
 }
 
 impl CompositeVerifier {
@@ -30,7 +32,14 @@ impl CompositeVerifier {
             consistency_enabled,
             rule_verifier: rules::RuleVerifier::new(config),
             consistency_checker: consistency::ConsistencyChecker::new(),
+            learned_rules: Vec::new(),
         }
+    }
+
+    /// Create a verifier with learned rules loaded.
+    pub fn with_learned_rules(mut self, rules: Vec<LearnedRule>) -> Self {
+        self.learned_rules = rules;
+        self
     }
 }
 
@@ -47,6 +56,11 @@ impl Verifier for CompositeVerifier {
         // Run consistency checks
         if self.consistency_enabled {
             all_checks.extend(self.consistency_checker.check(action, ctx));
+        }
+
+        // Run learned rules (from past failure analysis)
+        for rule in &self.learned_rules {
+            all_checks.push(evaluate_rule(rule, action, ctx));
         }
 
         let duration_ms = start.elapsed().as_millis() as u64;

@@ -144,6 +144,7 @@ pub struct ExecutionEngine {
     config: CarapaceConfig,
     storage: Storage,
     runtimes: Arc<Mutex<HashMap<SessionId, SessionRuntime>>>,
+    learned_rules: Arc<Mutex<Vec<crate::learner::rules::LearnedRule>>>,
 }
 
 impl ExecutionEngine {
@@ -152,11 +153,24 @@ impl ExecutionEngine {
             config,
             storage,
             runtimes: Arc::new(Mutex::new(HashMap::new())),
+            learned_rules: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn storage(&self) -> &Storage {
         &self.storage
+    }
+
+    /// Load learned rules from past session analysis into the verifier.
+    pub async fn load_learned_rules(&self, min_confidence: f64) -> Result<usize> {
+        let learner = crate::learner::Learner::new(self.storage.clone(), min_confidence);
+        let rules = learner.learn_rules().await?;
+        let count = rules.len();
+        if let Ok(mut lr) = self.learned_rules.lock() {
+            *lr = rules;
+        }
+        tracing::info!("Loaded {} learned rules (min_confidence={:.2})", count, min_confidence);
+        Ok(count)
     }
 
     pub async fn begin_session(&self, request: BeginSessionRequest) -> Result<BeginSessionResponse> {
@@ -435,7 +449,11 @@ impl ExecutionEngine {
             };
         }
 
-        let verifier = CompositeVerifier::new(self.config.verification.clone());
+        let learned = self.learned_rules.lock().ok()
+            .map(|lr| lr.clone())
+            .unwrap_or_default();
+        let verifier = CompositeVerifier::new(self.config.verification.clone())
+            .with_learned_rules(learned);
         verifier.verify(action, context)
     }
 
