@@ -1,494 +1,181 @@
 <p align="center">
   <h1 align="center">Carapace</h1>
-  <p align="center"><strong>Reliable execution infrastructure for AI agents.</strong></p>
-  <p align="center">Step verification &middot; Saga rollback &middot; Execution tracing</p>
+  <p align="center"><strong>The AI agent harness that learns what to verify from how your agent actually fails.</strong></p>
 </p>
 
 <p align="center">
-  <a href="https://github.com/cheatthegod/carapace/actions"><img alt="CI" src="https://img.shields.io/badge/tests-31%2F31%20passing-brightgreen"></a>
-  <a href="https://github.com/cheatthegod/carapace/blob/master/Cargo.toml"><img alt="Rust" src="https://img.shields.io/badge/rust-2024%20edition-orange"></a>
+  <a href="#tested-with-real-agents"><img alt="Claude Code" src="https://img.shields.io/badge/Claude%20Code-tested-blue"></a>
+  <a href="#flywheel-experiment"><img alt="Flywheel" src="https://img.shields.io/badge/flywheel-80%25→100%25-brightgreen"></a>
   <a href="https://github.com/cheatthegod/carapace/blob/master/Cargo.toml"><img alt="License" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
 </p>
 
 ---
 
-## The Problem
+## What makes Carapace different
 
-AI agents are unreliable on multi-step tasks. Not because the model is dumb, but because errors compound:
+Every other guardrail system works the same way: **humans write rules, the system enforces them.** When a new failure mode appears, a human notices, writes a new rule, deploys it.
 
-| Per-step accuracy | 5 steps | 10 steps | 20 steps |
-|:-:|:-:|:-:|:-:|
-| 95% | 77% | 60% | **36%** |
-| 99% | 95% | 90% | **82%** |
-
-Raising per-step accuracy from 95% to 99% through verification more than doubles the 20-step success rate (36% to 82%). That is what Carapace does.
-
-**Evidence:** Pi Research changed only the execution harness (model untouched) and SWE-bench jumped from 6.7% to 68.3%. The bottleneck is not the brain, it is the skeleton. ([Meng et al., "Agent Harness for LLM Agents: A Survey", 2026](https://www.preprints.org/manuscript/202604.0428/v1))
-
-## Tested with Real Agents
-
-Carapace has been validated in live Claude Code sessions (not simulations):
-
-| Run | Task | Steps | Verifier blocks | False positives | .env protected |
-|-----|------|:-----:|:---:|:---:|:---:|
-| Demo 1 | Workspace cleanup | 5 | 2 | 1 | Yes |
-| Demo 2 | Same (after path rule fix) | 5 | 2 | 1 | Yes |
-| Demo 3 | Same (after regex fix) | 4 | 1 | 0 | Yes |
-| **A/B Eval** | **Security bug fix** | **4** | **1** | **0** | **Yes** |
-
-**A/B comparison** (same task, same model, Carapace on vs off):
-
-| | Baseline | With Carapace |
-|---|:---:|:---:|
-| Task completed | Yes | Yes |
-| Security bugs fixed | 3/3 | 3/3 |
-| Tests passing | 5/5 | 5/5 |
-| Cost | $0.23 | $0.51 |
-| Steps traced + checkpointed | — | 4 steps, 1 checkpoint |
-
-Honest finding: on simple 4-step tasks, both runs succeed — Carapace adds overhead without differentiation. Carapace's value shows on **longer tasks** (10+ steps), **ambiguous requirements**, and **irreversible operations** where error compounding matters. See [`eval/REPORT.md`](eval/REPORT.md) for full analysis.
-
-## What Carapace Does
-
-Carapace is a lightweight middleware that wraps around **any** AI coding agent and provides three guarantees:
-
-### 1. Every step is verified
-
-Before an action takes effect, Carapace checks it against configurable rules, threat patterns, and consistency constraints.
+Carapace closes the loop:
 
 ```
-$ carapace verify execute "rm -rf /"
-Verification: fail
-- Blocked command pattern detected: rm -rf /
-
-$ carapace verify read "Read source file" --file src/main.rs
-Verification: pass
-
-$ carapace verify execute "git status"
-Verification: warn
-- Action type 'execute' requires confirmation
+Agent works → Carapace records every step
+                          ↓
+                    Failure happens
+                          ↓
+            Carapace analyzes: "consecutive writes
+            without reading → 50% failure rate"
+                          ↓
+            Generates rule automatically
+                          ↓
+            Next session: rule prevents the same failure
 ```
 
-**Verification layers** (cost-ascending, applied adaptively):
+The rules aren't static. They grow from your agent's real failure data. And they're not locked to one agent — they work across any MCP-compatible agent (Claude Code, Cursor, Goose, Aider, OpenHands).
 
-| Layer | Latency | What it catches |
-|---|---|---|
-| Rule checks | <1ms | Blocked commands, sensitive paths, file count limits |
-| Threat patterns | <1ms | Reverse shells, credential exfiltration, crypto miners, fork bombs |
-| Consistency checks | <1ms | Contradictory actions, loop traps, plan deviation |
-| Confirmation gate | human | High-risk operations (delete, execute) |
+## Flywheel experiment
 
-### 2. Failures roll back, not restart
-
-When a step fails, Carapace does not throw away all previous work. It rolls back to the nearest checkpoint and tries an alternative path.
+Proven in [`flywheel.rs`](crates/carapace-core/tests/flywheel.rs):
 
 ```
-Traditional agent:
-  Step 1 -> Step 2 -> Step 3 -> FAIL -> "Start over"  (all tokens wasted)
+Round 1:  5 sessions, no learned rules    →  80% step completion
+Learn:    analyze traces → 3 patterns discovered → rules saved to disk
+Round 2:  5 sessions, rules loaded from disk  →  100% step completion  (+20pp)
 
-Carapace agent:
-  Step 1 -> save -> Step 2 -> save -> Step 3 -> FAIL
-                                                  |
-                                        roll back to Step 2
-                                                  |
-                                        Step 3' (alternative) -> OK
+Rules discovered (not hand-written):
+  "3+ consecutive writes without a read → 100% failure rate"
+  "5+ steps without checkpoint → 100% had failures"
+  "write actions → 33% failure rate"
 ```
 
-This is the **Saga pattern** from distributed systems: each step registers a forward action and a compensating action. On failure, compensations execute in reverse order.
+The engine that ran Round 2 was a **new instance** that loaded rules from disk — proving persistence across restarts.
 
-- **Git-based checkpoints**: file changes are stashed/committed automatically before risky steps
-- **Configurable depth**: keep the last N checkpoints, prune older ones
-- **Smart triggers**: only checkpoint on writes, deletes, and executions (reads are free)
+## Tested with real agents
 
-### 3. Every decision is traceable
+Validated in 4 live Claude Code sessions, not simulations:
 
-Full audit trail of what the agent did, why, and at what cost.
+| Run | Verifier blocks | False positives | Result |
+|-----|:---:|:---:|---|
+| Demo 1 | 2 | 1 | Found first false positive (`.env` substring match) |
+| Demo 2 | 2 | 1 | Found second false positive (`.*sh` regex too broad) |
+| Demo 3 | 1 | 0 | Both fixes applied, 100% precision |
+| A/B Eval | 1 | 0 | Honest result: simple tasks succeed with or without Carapace |
+
+Each false positive was discovered from real data and fixed — exactly the iteration loop Carapace is designed for.
+
+## Quick start
+
+```bash
+# Build
+git clone https://github.com/cheatthegod/carapace.git
+cd carapace && cargo build --release
+
+# Add to any Claude Code project
+cat > .mcp.json << 'EOF'
+{
+  "mcpServers": {
+    "carapace": {
+      "type": "stdio",
+      "command": "target/release/carapace",
+      "args": ["mcp", "serve"]
+    }
+  }
+}
+EOF
+
+# That's it. Claude Code will now call Carapace tools automatically.
+```
+
+## How it works
+
+Carapace exposes 7 MCP tools. The agent calls them as part of its normal workflow:
+
+| Tool | When | What |
+|------|------|------|
+| `carapace_begin_session` | Start of task | Initialize session tracking |
+| `carapace_verify_step` | Before each action | Check static rules + learned rules |
+| `carapace_save_checkpoint` | Before risky writes | Git-backed snapshot for rollback |
+| `carapace_record_step` | After each action | Record outcome for trace + learning |
+| `carapace_rollback` | After failure | Restore checkpoint, try alternative |
+| `carapace_session_summary` | End of task | Aggregate stats |
+| `carapace_learn` | Periodically | Analyze all sessions, generate new rules, persist to disk |
+
+The agent doesn't need special instructions. The MCP server's `instructions` field tells the agent the protocol:
+
+> *Start with carapace_begin_session. Call carapace_verify_step before each action. If verification fails, skip and record as skipped. Call carapace_record_step after each action. Use carapace_learn to improve rules from past sessions.*
+
+## The adaptive learning loop
 
 ```
-Step 1 | READ  auth/config.ts         | pass   | $0.02 | 2,340 tok
-Step 2 | EDIT  auth/middleware.ts      | pass   | $0.12 | 8,721 tok
-Step 3 | EDIT  auth/session.ts         | warn   | $0.08 | 4,102 tok
-       |       "hardcoded secret"      | -> user notified, fixed
-Step 4 | EDIT  auth/refresh.ts         | fail   | $0.00 | 0 tok
-       |       test failure: race cond | -> rolled back to Step 3
-Step 4'| EDIT  auth/refresh.ts (v2)    | pass   | $0.08 | 6,210 tok
-
-Total: 5 steps (1 rollback recovery) | $0.30 | 21,373 tok
+              ┌─── verify_step ←── learned rules ←─┐
+              │                                     │
+Agent ────→ Carapace ────→ record_step ────→ trace DB
+                                                │
+                                          carapace_learn
+                                                │
+                                          pattern analysis
+                                                │
+                                      ┌─── 5 detectors ───┐
+                                      │                    │
+                                      │ consecutive writes │
+                                      │ repeated edits     │
+                                      │ missing tests      │
+                                      │ no checkpoints     │
+                                      │ high-fail actions  │
+                                      └────────┬───────────┘
+                                               │
+                                       learned_rules.json
+                                               │
+                                    auto-loaded on next startup
 ```
 
-**Anomaly detection** runs continuously:
-- **Token spike**: current step uses 3x+ the rolling average
-- **Loop trap**: same action repeated 3+ times in a window
-- **Goal drift**: action pattern shifts significantly from initial behavior
-
----
+Rules persist to `learned_rules.json` and are loaded automatically when the MCP server starts. The system gets better over time without human intervention.
 
 ## Architecture
 
 ```
-                    Carapace
-  +-----------------------------------------+
-  |  Verifier    Checkpoint     Tracer      |
-  |  (rules,     (git stash,   (SQLite,    |
-  |   patterns,   saga txn,     anomaly,   |
-  |   consistency) rollback)    export)    |
-  +------|-------------|------------|-------+
-         |             |            |
-         +------+------+------+----+
-                |
-         ExecutionEngine
-         (orchestrates all three)
-                |
-    +-----------+-----------+
-    |           |           |
- MCP Server  CLI Wrapper  HTTP Proxy
-    |           |         (planned)
-    v           v
- Any MCP     Any CLI
- agent       agent
-```
-
-### Crate structure
-
-| Crate | Purpose |
-|---|---|
-| `carapace-core` | Types, config, verifier, checkpoint, tracer, engine |
-| `carapace-mcp` | MCP server integration (tool manifest, stdio transport) |
-| `carapace-cli` | Binary with `init`, `wrap`, `verify`, `summary`, `trace`, `mcp` subcommands |
-| `carapace-test` | Test harness utilities |
-
----
-
-## Quick Start
-
-### Install
-
-```bash
-# From source
-git clone https://github.com/cheatthegod/carapace.git
-cd carapace
-cargo build --release
-
-# The binary is at target/release/carapace
-```
-
-### Zero-config usage
-
-```bash
-# Verify a proposed action
-carapace verify write "Update auth module" --file src/auth.rs
-
-# Wrap an agent command with verification + tracing
-carapace wrap -- claude-code --task "refactor auth"
-
-# Generate a default config file
-carapace init
-```
-
-### View results
-
-```bash
-# Print session summary
-carapace summary <session-id>
-
-# Export full trace
-carapace trace <session-id> --format json
-carapace trace <session-id> --format csv --output trace.csv
-```
-
-### MCP mode
-
-```bash
-# Print the MCP tool manifest
-carapace mcp manifest
-
-# Start the MCP stdio server
-carapace mcp serve
-```
-
----
-
-## Configuration
-
-Carapace works with zero configuration. To customize, run `carapace init` and edit `~/.config/carapace/config.yaml`:
-
-```yaml
-verification:
-  enabled: true
-  rules_enabled: true
-  consistency_enabled: true
-
-  # Commands that are always blocked (supports regex)
-  blocked_commands:
-    - "rm -rf /"
-    - "mkfs"
-    - "curl.*|.*sh"
-
-  # Paths the agent must never touch
-  blocked_paths:
-    - "/etc/shadow"
-    - "~/.ssh"
-    - ".env"
-
-  # Max files an agent can modify in one step
-  max_files_per_step: 20
-
-  # Action types that require human confirmation
-  require_confirmation_for:
-    - delete
-    - execute
-
-checkpoint:
-  enabled: true
-  strategy: git          # git | file_copy | none
-  auto_save: true
-  max_rollback_depth: 10
-  auto_save_on:          # only checkpoint these action types
-    - write
-    - delete
-    - execute
-
-trace:
-  enabled: true
-  retention_days: 30
-  detect_anomalies: true
-  token_spike_threshold: 3.0   # flag if >3x rolling average
-  loop_detection_window: 5     # check last 5 steps for repeats
-
-cost:
-  track_tokens: true
-  daily_limit_usd: null        # set to e.g. 20.0 for a hard cap
-  monthly_limit_usd: null
-  alert_threshold: 0.8         # alert at 80% of limit
-```
-
----
-
-## How It Works
-
-### Verification flow
-
-```
-Agent proposes an action
-        |
-        v
-  +-- Rule checks --------+
-  |  blocked commands?     |  <1ms
-  |  blocked paths?        |
-  |  too many files?       |
-  |  threat patterns?      |
-  +-----|------------------+
-        |
-  +-- Consistency checks --+
-  |  contradicts prev step?|  <1ms
-  |  loop trap detected?   |
-  |  deviates from plan?   |
-  +-----|------------------+
-        |
-  +-- Confirmation gate ---+
-  |  high-risk action type?|  human latency
-  +-----|------------------+
-        v
-  pass / warn / fail
-```
-
-### Threat patterns (built-in)
-
-| Pattern | Risk | Example |
-|---|---|---|
-| Reverse shell | Critical | `bash -i >& /dev/tcp/...` |
-| Credential exfiltration | Critical | `curl ... $API_KEY` |
-| Crypto miner | Critical | `xmrig`, `stratum+tcp://` |
-| Privilege escalation | High | `sudo chmod 4777 /` |
-| Data exfiltration | Critical | `cat /etc/shadow \| nc ...` |
-| Code injection | High | `eval(base64decode(...))` |
-| Fork bomb | Critical | `:(){ :\|:& };:` |
-| Disk destruction | Critical | `dd if=/dev/zero` |
-| SSH key theft | Critical | `cp ~/.ssh/id_rsa ...` |
-| Environment dump | High | `printenv > /tmp/...` |
-
-### Saga rollback
-
-Each step that modifies state registers a compensating action:
-
-```
-Saga history:
-  Step 1: edit config.ts    -> compensate: git stash apply stash@{2}
-  Step 2: edit middleware.ts -> compensate: git stash apply stash@{1}
-  Step 3: edit session.ts   -> compensate: git stash apply stash@{0}
-  Step 4: edit refresh.ts   -> FAILED (test failure)
-                                |
-                                v
-                         Execute compensations in reverse:
-                           undo Step 4 (nothing saved)
-                           undo Step 3 (restore stash@{0})
-                         Agent retries Step 3 with alternative approach
-```
-
----
-
-## Integration Modes
-
-| Mode | How | Best for |
-|---|---|---|
-| **CLI `verify`** | `carapace verify <type> <desc>` | Quick one-off checks from scripts |
-| **CLI `wrap`** | `carapace wrap -- <agent command>` | Wrapping any CLI agent with tracing |
-| **MCP Server** | `carapace mcp serve` (stdio) | Agents that support MCP tool calls |
-| **Library** | `use carapace_core::ExecutionEngine` | Embedding in Rust agent code |
-
-### Supported agents
-
-Carapace is agent-agnostic. It works with any agent that runs in a terminal or speaks MCP:
-
-- Claude Code
-- Aider
-- Hermes Agent
-- OpenClaw
-- Goose
-- OpenHands
-- Codex
-- Any MCP-compatible agent
-
----
-
-## Project Structure
-
-```
 carapace/
-  Cargo.toml                          # Workspace root
   crates/
-    carapace-core/
-      src/
-        types.rs                      # Shared types (StepAction, TraceEntry, etc.)
-        config/
-          schema.rs                   # Config structs with serde
-          mod.rs                      # YAML loading, XDG paths
-        verifier/
-          rules.rs                    # Rule engine (commands, paths, files, threats)
-          patterns.rs                 # 10 compiled threat patterns
-          consistency.rs              # Contradiction / loop / drift detection
-          mod.rs                      # CompositeVerifier
-        checkpoint/
-          git.rs                      # Git stash/commit checkpoints
-          saga.rs                     # Saga coordinator (forward + compensate)
-          mod.rs                      # CheckpointManager
-        tracer/
-          store.rs                    # SQLite WAL storage
-          anomaly.rs                  # Token spike / loop / drift detection
-          export.rs                   # JSON and CSV export
-          mod.rs                      # Tracer
-        engine/
-          mod.rs                      # ExecutionEngine (verify -> checkpoint -> trace)
-        storage/
-          sqlite.rs                   # Connection pool, migrations, CRUD
-          migrations/
-            001_initial.sql           # Schema: sessions, steps, checkpoints, anomalies
-    carapace-mcp/
-      src/lib.rs                      # MCP server with tool manifest
-    carapace-cli/
-      src/main.rs                     # CLI: init, wrap, verify, summary, trace, mcp
-    carapace-test/
-      src/lib.rs                      # Test harness utilities
+    carapace-core/         # Engine, verifier, checkpoint, tracer, learner
+      verifier/            # Static rules + threat patterns + consistency + learned rules
+      checkpoint/          # Git-backed snapshots + Saga rollback
+      tracer/              # SQLite traces + anomaly detection + export
+      learner/             # Pattern discovery + rule generation + persistence
+      engine/              # Orchestrates everything, holds learned state
+    carapace-mcp/          # MCP server (7 tools, rmcp 0.1.5)
+    carapace-cli/          # Binary: verify, wrap, learn, summary, trace, mcp
 ```
 
----
+Single Rust binary. SQLite for traces. Git for checkpoints. No external services.
+
+## When Carapace helps (and when it doesn't)
+
+**Helps:**
+- Tasks with 10+ steps where error compounding matters
+- Irreversible operations (deletes, deployments, migrations)
+- Teams switching between multiple agents (learned rules are agent-agnostic)
+- Projects where the same failure patterns recur across sessions
+
+**Doesn't help:**
+- Simple 3-4 step tasks (baseline already succeeds, Carapace is overhead)
+- Single-shot code generation (no multi-step execution to verify)
+
+We tested this honestly: our A/B evaluation showed both groups succeed on a simple security-fix task. Carapace's value is in the tail — longer tasks, repeat failures, irreversible damage.
 
 ## Development
 
-### Prerequisites
-
-- Rust stable (2024 edition)
-- Git (for checkpoint backend)
-- SQLite (bundled via sqlx)
-
-### Build and test
-
 ```bash
-cargo build
-cargo test
-
-# Run with tracing output
-RUST_LOG=debug cargo run -- verify execute "test command"
+cargo build            # Build
+cargo test             # 40 tests (34 unit + 3 integration + 3 MCP)
+cargo run -- learn     # Analyze past sessions
+cargo run -- verify execute "rm -rf /"   # Test verification
 ```
 
-### Running tests
+## Related work
 
-```
-$ cargo test
-
-running 31 tests
-test checkpoint::git::tests::detect_git_repo ... ok
-test checkpoint::git::tests::save_and_restore_checkpoint ... ok
-test checkpoint::saga::tests::max_depth_pruning ... ok
-test checkpoint::saga::tests::partial_rollback ... ok
-test checkpoint::saga::tests::rollback_executes_in_reverse ... ok
-test checkpoint::saga::tests::rollback_to_checkpoint ... ok
-test storage::sqlite::tests::empty_summary_defaults_to_zero ... ok
-test storage::sqlite::tests::previous_summaries_preserve_step_order ... ok
-test verifier::patterns::tests::detects_credential_exfil ... ok
-test verifier::patterns::tests::detects_reverse_shell ... ok
-test verifier::patterns::tests::ignores_safe_commands ... ok
-test verifier::rules::tests::allows_safe_action ... ok
-test verifier::rules::tests::blocks_dangerous_path ... ok
-test verifier::rules::tests::blocks_home_shorthand_sensitive_paths ... ok
-test verifier::rules::tests::blocks_regex_style_command_patterns ... ok
-test verifier::rules::tests::blocks_too_many_files ... ok
-test verifier::rules::tests::warns_when_confirmation_is_required ... ok
-
-test result: ok. 31 passed; 0 failed; 0 ignored
-```
-
----
-
-## Roadmap
-
-### Phase 1 -- Verifiable (done)
-
-- [x] Rule-based verification engine (commands, paths, file limits)
-- [x] Threat pattern matching (10 built-in patterns)
-- [x] Consistency checking (contradictions, loops, plan drift)
-- [x] Git-based checkpoints (non-mutating `stash create`)
-- [x] Saga transaction rollback (reverse-order compensation)
-- [x] SQLite trace storage with anomaly detection
-- [x] CLI: verify / wrap / summary / trace / mcp
-- [x] Full MCP server (6 tools via rmcp 0.1.5 ServerHandler)
-- [x] Live Claude Code integration (tested in 4 real sessions)
-- [x] A/B evaluation framework with automated comparison
-- [x] Completion rate integration test (0% baseline → 100% guarded)
-- [x] 2 false-positive fixes from real demo data (path matching, command regex)
-
-### Phase 2 (current) -- Recoverable
-
-- [ ] Lightweight model review (use cheap model to verify expensive model output)
-- [ ] Auto-test execution after code changes
-- [ ] Alternative path selection on rollback (failure analysis -> retry strategy)
-- [ ] Cost tracking with budget enforcement and auto-downgrade
-- [ ] Evaluation on longer tasks (10-20 steps) where error compounding matters
-
-### Phase 3 -- Observable
-
-- [ ] Web dashboard (session viewer, step timeline, cost charts)
-- [ ] Trace replay (re-walk any failure path)
-- [ ] CI/CD integration (GitHub Actions)
-- [ ] Verification strategy marketplace (community rule sets)
-- [ ] Multi-agent saga coordination
-
----
-
-## Why "Carapace"?
-
-A carapace is the hard protective shell of a crustacean. It does not replace the animal inside -- it protects it. Carapace does the same for AI agents: it wraps around any agent and shields the execution from compounding errors, unsafe actions, and silent failures.
-
----
-
-## Related Work
-
-- [Agent Harness for LLM Agents: A Survey](https://www.preprints.org/manuscript/202604.0428/v1) -- the paper that formalized the harness as the binding constraint
-- [Towards a Science of AI Agent Reliability](https://arxiv.org/abs/2602.16666) -- 12 metrics across 4 reliability dimensions
-- [SWE-bench](https://www.swebench.com/) / [Terminal-Bench](https://www.tbench.ai/) -- benchmarks for measuring agent task completion
-- [Microsoft Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit) -- enterprise-grade agent policy enforcement
-
----
+- [Agent Harness for LLM Agents: A Survey](https://www.preprints.org/manuscript/202604.0428/v1) — formalizes the harness as the binding constraint
+- [Towards a Science of AI Agent Reliability](https://arxiv.org/abs/2602.16666) — 12 reliability metrics
+- [Galileo Agent Control](https://galileo.ai/) — eval-to-guardrail at enterprise scale (SaaS)
+- [Agent Reliability Engineering](https://github.com/choutos/agent-reliability-engineering) — SRE principles for agents
 
 ## License
 

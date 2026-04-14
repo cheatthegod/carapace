@@ -11,13 +11,14 @@ use rmcp::{
 };
 use serde::Serialize;
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
 
 #[derive(Clone)]
 pub struct McpServer {
     engine: ExecutionEngine,
+    data_dir: PathBuf,
     peer: std::sync::Arc<Mutex<Option<Peer<RoleServer>>>>,
 }
 
@@ -27,8 +28,20 @@ impl McpServer {
         let storage = Storage::new(&db_path_str).await?;
         let engine = ExecutionEngine::new(config, storage);
 
+        let data_dir = db_path.as_ref().parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from(".carapace"));
+
+        // Auto-load persisted learned rules on startup.
+        match engine.load_rules_from_disk(&data_dir) {
+            Ok(n) if n > 0 => tracing::info!("MCP server loaded {n} learned rules on startup"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!("Failed to load persisted rules: {e}"),
+        }
+
         Ok(Self {
             engine,
+            data_dir,
             peer: std::sync::Arc::new(Mutex::new(None)),
         })
     }
@@ -245,12 +258,10 @@ impl McpServer {
     async fn handle_learn(&self, val: serde_json::Value) -> Result<CallToolResult, McpError> {
         let min_confidence = val.get("min_confidence").and_then(|v| v.as_f64()).unwrap_or(0.3);
 
-        let learner = carapace_core::learner::Learner::new(
-            self.engine.storage().clone(),
-            min_confidence,
-        );
-
-        let report = learner.learn().await
+        // Analyze traces, persist rules to disk, and load into running verifier.
+        let report = self.engine
+            .learn_and_save(&self.data_dir, min_confidence)
+            .await
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let output = serde_json::json!({
