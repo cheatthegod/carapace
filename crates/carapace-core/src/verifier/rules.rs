@@ -274,18 +274,70 @@ mod tests {
         let results = v.check(&action, &test_ctx());
         assert!(results.iter().any(|r| !r.passed && r.checker_name == "blocked_paths"));
     }
+
+    #[test]
+    fn dotenv_rule_blocks_exact_basename_only() {
+        // .env rule should block files NAMED .env, not files ending in .env
+        assert!(path_matches_rule("project/.env", ".env"));
+        assert!(path_matches_rule("/home/user/repo/.env", ".env"));
+        assert!(path_matches_rule(".env", ".env"));
+
+        // Should NOT block files like example.env or production.env
+        assert!(!path_matches_rule("config/example.env", ".env"));
+        assert!(!path_matches_rule("/workspace/config/production.env", ".env"));
+        assert!(!path_matches_rule("template.env", ".env"));
+    }
+
+    #[test]
+    fn secrets_component_rule_blocks_secrets_directory() {
+        assert!(path_matches_rule("project/secrets/token.txt", "secrets"));
+        assert!(path_matches_rule("/workspace/secrets/secret.env", "secrets"));
+
+        // Should NOT match if "secrets" is a substring of a different segment
+        assert!(!path_matches_rule("project/no_secrets_here/file.txt", "secrets"));
+    }
+
+    #[test]
+    fn absolute_prefix_rule() {
+        assert!(path_matches_rule("/etc/shadow", "/etc/shadow"));
+        assert!(path_matches_rule("/etc/shadow.bak", "/etc/shadow"));
+        assert!(!path_matches_rule("/home/etc/shadow", "/etc/shadow"));
+    }
+
+    #[test]
+    fn home_shorthand_rule() {
+        assert!(path_matches_rule("/home/ubuntu/.ssh/id_rsa", "~/.ssh"));
+        assert!(path_matches_rule("/root/.ssh", "~/.ssh"));
+        assert!(!path_matches_rule("/home/ubuntu/ssh/key", "~/.ssh"));
+    }
 }
 
+/// Match a file path against a blocked-path rule.
+///
+/// Rules are interpreted based on their shape:
+///   - Starts with `/`  → prefix match (e.g. `/etc/shadow` blocks `/etc/shadow` and `/etc/shadow.bak`)
+///   - Starts with `~/` → component match after home dir (e.g. `~/.ssh` blocks `/home/user/.ssh/id_rsa`)
+///   - Starts with `.`  → basename match (e.g. `.env` blocks `secrets/.env` but NOT `config/example.env`)
+///   - Otherwise        → component match anywhere in path (e.g. `node_modules` blocks `src/node_modules/pkg`)
 fn path_matches_rule(path: &str, rule: &str) -> bool {
-    if path.contains(rule) {
-        return true;
+    if rule.starts_with('/') {
+        // Absolute prefix: /etc/shadow matches /etc/shadow and /etc/shadow.bak
+        return path.starts_with(rule);
     }
 
     if let Some(stripped) = rule.strip_prefix("~/") {
-        return path.contains(stripped);
+        // Home-relative component: ~/.ssh matches anything containing /.ssh/ or ending with /.ssh
+        return path.contains(&format!("/{stripped}/")) || path.ends_with(&format!("/{stripped}"));
     }
 
-    false
+    if rule.starts_with('.') {
+        // Dotfile/extension: .env matches files NAMED .env (basename), not files ending in .env
+        let basename = path.rsplit('/').next().unwrap_or(path);
+        return basename == rule;
+    }
+
+    // Generic component match: the rule appears as a full path segment
+    path.split('/').any(|segment| segment == rule)
 }
 
 fn path_is_allowed(path: &str, rule: &str) -> bool {

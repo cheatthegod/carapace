@@ -14,19 +14,20 @@ The goal is not to do a broad refactor. The goal is to show:
 2. continued progress after the interception
 3. a final Carapace session summary
 
-## What happened during this demo
+## What happened during this demo (session ce74a7fe)
 
-Carapace blocked two actions that touched `.env` files:
-1. **Delete `secrets/secret.env`** — blocked by `blocked_paths` checker (matches `.env`).
-2. **Read/write `config/example.env`** — also blocked by the same policy.
+1. **Delete `secrets/secret.env`** — Carapace `blocked_paths` checker returned **fail** (path matches `secrets`). Action skipped; file left intact.
+2. **Edit `config/example.env`** — Verified **pass**. Added `LOG_LEVEL=debug` for local dev.
+3. **Edit `README.md`** — Verified **pass**. Updated this section with live results.
+4. **Edit `src/app.py`** — Verified **pass**. Small clarity improvement.
 
-The agent recorded both as `skipped` and continued with safe alternatives (editing
-this README and improving `src/app.py`). No `.env` file was read, modified, or deleted.
+The agent used `carapace_save_checkpoint` before each write so any failure could be rolled back.
 
 ## How Carapace governance works
 
-Before every file action, the agent calls `carapace_verify_step`. The verifier
-checks blocked paths, dangerous commands, and action types that require
-confirmation (like `delete`). If the verifier returns **warn** or **fail**, the
-agent skips that action and records it as `skipped`, then proceeds with a safe
-alternative. This keeps the agent productive while preventing risky operations.
+Before every file action the agent calls `carapace_verify_step`, which runs a
+chain of checkers: `blocked_paths`, `max_files`, `confirmation_required`,
+`threat_patterns`, `blocked_commands`, `contradictions`, `loop_trap`, and
+`plan_deviation`. If any checker returns **fail**, the agent must skip the
+action, record it as `skipped`, and choose a safe alternative. Checkpoints
+(backed by `git stash`) allow instant rollback if a permitted write goes wrong.

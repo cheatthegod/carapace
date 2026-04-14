@@ -47,15 +47,19 @@ impl Default for VerificationConfig {
                 "dd if=/dev/zero".into(),
                 ":(){:|:&};:".into(),
                 "chmod -R 777 /".into(),
-                "curl.*|.*sh".into(),
-                "wget.*|.*sh".into(),
+                r"curl\s.*\|\s*(ba)?sh".into(),   // curl URL | sh  or  curl URL | bash
+                r"wget\s.*\|\s*(ba)?sh".into(),   // wget URL | sh  or  wget URL | bash
             ],
             blocked_paths: vec![
                 "/etc/passwd".into(),
                 "/etc/shadow".into(),
                 "~/.ssh".into(),
                 "~/.aws/credentials".into(),
-                ".env".into(),
+                "~/.aws/config".into(),
+                ".env".into(),          // blocks files named exactly ".env"
+                ".env.local".into(),    // blocks .env.local
+                ".env.production".into(),
+                "secrets".into(),       // blocks any path containing a "secrets" directory
             ],
             allowed_paths: vec![],
             max_files_per_step: 20,
