@@ -46,6 +46,9 @@ pub fn analyze_sessions(sessions: &[SessionTrace]) -> Vec<FailurePattern> {
     if let Some(p) = detect_failure_after_action_type(sessions) {
         patterns.push(p);
     }
+    if let Some(p) = detect_frequently_blocked_actions(sessions) {
+        patterns.push(p);
+    }
 
     // Sort by confidence descending.
     patterns.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
@@ -338,6 +341,55 @@ fn detect_failure_after_action_type(sessions: &[SessionTrace]) -> Option<Failure
             action_types: vec![action_type.clone()],
         },
     })
+}
+
+/// Detect action types that are frequently blocked by the verifier.
+/// Verifier blocks (warn/fail) are "near-misses" — the agent attempted
+/// something risky. Even when the overall step "succeeds" (because the
+/// agent adapted), the block pattern is worth learning from.
+fn detect_frequently_blocked_actions(sessions: &[SessionTrace]) -> Option<FailurePattern> {
+    let mut total_steps = 0u32;
+    let mut blocked_steps = 0u32;
+
+    for session in sessions {
+        for step in &session.steps {
+            total_steps += 1;
+            if !step.verification.decision.is_pass() {
+                blocked_steps += 1;
+            }
+        }
+    }
+
+    if blocked_steps < 2 || total_steps < 5 {
+        return None;
+    }
+
+    let block_rate = blocked_steps as f64 / total_steps as f64;
+    if block_rate < 0.1 {
+        return None;
+    }
+
+    let confidence = confidence_score(blocked_steps, block_rate);
+
+    Some(FailurePattern {
+        name: "frequently_blocked_actions".into(),
+        description: format!(
+            "{}/{} steps blocked by verifier ({:.0}%) — agent frequently attempts risky actions",
+            blocked_steps, total_steps, block_rate * 100.0,
+        ),
+        occurrences: blocked_steps,
+        failure_rate: block_rate,
+        confidence,
+        suggestion: LearnedSuggestion::CheckpointBefore {
+            action_types: vec!["write".into(), "delete".into(), "execute".into()],
+        },
+    })
+}
+
+/// A step is "problematic" if it failed OR was blocked by the verifier.
+#[allow(dead_code)]
+fn is_problematic(step: &TraceEntry) -> bool {
+    !step.result.is_success() || !step.verification.decision.is_pass()
 }
 
 /// Simple confidence score: higher with more data and higher failure rate.
