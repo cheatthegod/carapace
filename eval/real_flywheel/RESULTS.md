@@ -61,3 +61,26 @@ The flywheel IS working — it discovered a real pattern from real data. But the
 1. **Broaden "signal" beyond hard failures** — verifier blocks, high token usage, repeated edits, and session duration are all learnable signals even when the agent never outright fails.
 2. **Need more sessions** — 6 sessions with 20 steps is below the statistical threshold for high-confidence rules. Real-world usage over days/weeks would accumulate enough data.
 3. **Harder tasks** — multi-repo refactors, migration workflows, CI/CD pipelines — these are where frontier models actually fail and where learned rules would have the highest value.
+
+## Haiku Model Experiment (2026-04-15)
+
+Ran the same 5 tasks with `--model haiku` (Claude Haiku 4.5).
+
+| Metric | Opus (6 sessions) | Haiku (5 sessions) |
+|--------|:-:|:-:|
+| Total steps | 20 | 11 |
+| Verifier blocks | 4 (20%) | 3 (27%) |
+| Failures | 0 | 0 |
+| Avg cost/task | $0.26 | $0.09 |
+
+**Haiku also produces zero failures.** The tasks are too short (2-4 actual steps each) for error compounding to manifest. Haiku does trigger more verifier blocks (27% vs 20%) — it more frequently attempts operations that static rules consider risky.
+
+### Honest conclusion
+
+The "weaker model = more failures" hypothesis didn't hold on these tasks. Both Opus and Haiku complete 3-4 step coding tasks without errors. To genuinely test the error compounding thesis, we need:
+
+- **30+ step autonomous workflows** (not 3-step file edits)
+- **Multi-dependency tasks** where step N depends on step N-3 being correct
+- **Tasks with genuine ambiguity** where the model might take a wrong path
+
+These are hard to construct in a `claude -p` one-shot. They represent real production agent workflows — CI/CD pipelines, multi-service deployments, large codebase refactors — which is exactly where Carapace's value proposition lives.
